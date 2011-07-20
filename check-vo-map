@@ -87,7 +87,7 @@ sub parse_commandline
 sub usage
 {
     print "Usage:\n";
-    print "  osg-vo-map --input <name>\n";
+    print "  $0 --input <name>\n";
     print "             --output <name>\n";
     print "             --volist <name>\n";
     print "             --undefined_ids <name>\n";

@@ -80,7 +80,7 @@ sub parse_commandline
 sub usage
 {
     print "Usage:\n";
-    print "  generate-vo-map --input <name>\n";
+    print "  $0 -vo-map --input <name>\n";
     print "                  --output <name>\n";
     print "                  --log <name>\n";
     print "                  --help\n";
