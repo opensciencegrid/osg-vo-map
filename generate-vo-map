@@ -1,0 +1,314 @@
+#!/usr/bin/env perl
+
+#####################################################################
+#
+# generate-vo-map
+#
+# Examine an edg-mkgridmap.conf file (specified by --input)
+# and create an OSG user-VO map. This is a file that list which 
+# users are used for which VO. It's used by monitoring, and is
+# assumed to list which VOs are actually supported by a site.
+# 
+#####################################################################
+
+# ----- pragmas ----- #
+use strict;
+use warnings;
+use FileHandle;
+use Getopt::Long;
+
+# ----- globals ----- #
+my $input_filename   = "";
+my $output_filename  = "";
+my $log_filename     = "";
+my $log;
+
+# Each mapping is a reference to a hash table that maps "vo"->VO name
+# "account"->account name
+my @mappings;
+
+# ----- main flow ----- #
+parse_commandline();
+open_log_file();
+write_log_header();
+read_makegridmap_conf();
+write_vo_map();
+close_log_file();
+exit(0);
+
+#####################################################################
+#
+# Function: parse_commandline
+# Purpose:  Read the command line. Fail with usage if there 
+#           are any problems.
+# 
+#####################################################################
+sub parse_commandline
+{
+    my $show_usage = 0;
+
+    GetOptions("input=s"    => \$input_filename,
+               "output=s"   => \$output_filename,
+               "log:s"      => \$log_filename,
+               "help"       => \&usage);
+
+    if ($input_filename eq "" )
+    {
+        print "--input is a required parameter\n";
+        $show_usage = 1;
+    }
+
+    if ($output_filename eq "" )
+    {
+        print "--output is a required parameter\n";
+        $show_usage = 1;
+    }
+
+    if ($show_usage == 1)
+    {
+        usage();
+    }
+    return;
+}
+
+#####################################################################
+#
+# Function: usage
+# Purpose:  Print information about how to use this program
+# 
+#####################################################################
+sub usage
+{
+    print "Usage:\n";
+    print "  generate-vo-map --input <name>\n";
+    print "                  --output <name>\n";
+    print "                  --log <name>\n";
+    print "                  --help\n";
+    print "  --input and --output are required\n";
+    print "  If --log is not specified, it defaults to stderr\n";
+    exit(1);
+}
+
+#####################################################################
+#
+# Function: write_log_header
+# Purpose:  Information we print in the log file when we startup.
+# 
+#####################################################################
+sub write_log_header
+{
+    log_message("#######################");
+    log_message("Running generate-vo-map");
+    log_message("Reading from '$input_filename', writing to '$output_filename'");
+    return;
+}
+
+#####################################################################
+#
+# Function: read_makegridmap_conf
+# Purpose:  Read the edg-mkgridmap.conf file (given as --input parameter)
+#           and construct a list of mappings of users to VOs.
+# 
+#####################################################################
+sub read_makegridmap_conf
+{
+    my $input = new FileHandle $input_filename;
+    my $current_voc = "";
+    my $current_voi = "";
+    my $account     = "";
+    if (not defined $input) {
+        log_message("Could not open '$input_filename'");
+        exit(1);
+    }
+    while (my $line = <$input>) {
+
+        chomp($line);
+        # We look for comment lines like this:
+        # 1 VO John Doe Email
+        # And we pull out the VO name
+        if ($line =~ /^\s*#\s*\d+\s+(\S*)/) 
+        {
+            $current_voc = $1;
+            $current_voi = lc($current_voc);
+        } 
+        # New format (courtesy John Weignad)
+        # USER-VO-MAP voi VOC -- N -- Name (Email)
+        elsif ($line =~ /^\s*#\s*USER-VO-MAP\s+(\S+)\s+(\S+)/)
+        {
+            $current_voc = $2;
+            $current_voi = $1;
+        }
+        # Ignore blank lines
+        elsif ($line =~ /^\s*$/) 
+        {
+            next;
+        } 
+        # Ignore lines that begin with comments
+        elsif ($line =~ /^\s*#/) 
+        { 
+             next;
+        } 
+        # Ignore lines that specify local edits to the grid map file
+        elsif ($line =~/^\s*gmf_local/
+               || $line =~/^\s*allow/
+               || $line =~/^\s*deny/
+               || $line =~/^\s*auth/
+               || $line =~/^\s*default_lcluser/)
+        {
+            next;
+        }
+        # group VOMS-Server account
+        elsif ($line =~ /^\s*group\s+\S+\s+(\S+)/) {
+            $account = $1;
+            if ($current_voc ne "") {
+                my %map;
+
+                $map{"account"}  = $account;
+                $map{"voc"}      = $current_voc;
+                $map{"voi"}      = $current_voi;
+
+                if (!in_maps(\%map)) 
+                {
+                    push(@mappings, \%map);
+                }
+            }
+        } 
+        else 
+        {
+            log_message("Warning: Unknown input line: '$line'");
+        }
+    }
+    return;
+}
+
+#####################################################################
+#
+# Function: in_maps
+# Purpose:  Checks the list of existing mappings to see if the map that
+#           is under investigation is already in the list of mappings.
+# 
+#####################################################################
+sub in_maps
+{
+    my $new_map = $_[0];
+    my $in_map  = 0;
+
+    foreach my $map (@mappings) {
+        if (   $new_map->{"voc"} eq $map->{"voc"}
+            && $new_map->{"account"} eq $map->{"account"}) {
+            $in_map = 1;
+            last;
+        }
+    }
+    return $in_map;
+}
+
+#####################################################################
+#
+# Function: write_vo_map
+# Purpose:  Write the VO map.
+# 
+#####################################################################
+sub write_vo_map
+{
+    my $map;
+    my $current_time;
+    my $output;
+
+    $output = new FileHandle "$output_filename", "w";
+    if (defined $output)
+    {
+        print $output "# User-VO map\n";
+        print $output "# Generated by generate-vo-map\n";
+        print $output "# The voi line is used by MonaLISA, and is the lower-case version of all VO names\n";
+        print $output "# The VOc line is used by MonaLISA, and is the proper-case version of all VO names\n";
+        print $output "# Other lines are of the form <account> <VO>\n";
+        print $output "\n";
+        
+        ##### Print the voi line
+        print $output "#voi ";
+        foreach $map (@mappings) 
+        {
+            print $output $map->{"voi"} . " ";
+        }
+        print $output "\n";
+        
+        ##### Print the VOc line
+        print $output "#VOc ";
+        foreach $map (@mappings) {
+            print $output $map->{"voc"} . " ";
+        }
+        print $output "\n";
+        print $output "\n";
+        
+        ##### Print the mappings
+        foreach $map (@mappings) {
+            print $output $map->{"account"} . " " . $map->{"voi"} . "\n";
+        }
+        $output->close();
+    } 
+    else
+    {
+        log_message("Can't open '$output_filename'");
+    }
+    return;
+}
+
+#####################################################################
+#
+# Function: open_log_file
+# Purpose:  Open the up the file we use for logging, or set it to 
+#           be stderr if no file was specified.
+# 
+#####################################################################
+sub open_log_file
+{
+    if ($log_filename ne "")
+    {
+        $log = new FileHandle($log_filename, "a");
+        if (!defined $log) 
+        {
+            print STDERR "Can't open logfile '$log_filename'\n";
+            exit(1);
+        }
+    }
+    else
+    {
+        $log = new FileHandle();
+        $log->fdopen(fileno(STDERR), "a");
+    }
+    return;
+}
+
+#####################################################################
+#
+# Function: log_message
+# Purpose:  Write a message to the log file.
+#           We put a timestamp at the beginning of each line (ISO 8601)
+#           We put a newline on each message.
+# 
+#####################################################################
+sub log_message
+{
+    my $message = $_[0];
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+
+    printf $log "%d-%02d-%02dT%02d-%02d-%02d %s\n", 
+           $year+1900, $mon, $mday, $hour, $min, $sec, $message;
+    return;
+}
+
+#####################################################################
+#
+# Function: close_log_file
+# Purpose:  Close log file, if it isn't stderr.
+# 
+#####################################################################
+sub close_log_file
+{
+    if ($log_filename ne "")
+    {
+        $log->close();
+    }
+    return;
+}

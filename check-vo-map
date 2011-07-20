@@ -1,0 +1,352 @@
+#!/usr/bin/env perl
+
+#####################################################################
+#
+# check-vo-map
+#
+# Read an OSG user-vo map file and eliminate any entries for which the
+# user account doesn't actually exist, as determined by running 'id'.
+#
+# Optionally create a vo-list, which is the list of VOs in the user-vo
+# map. This is useful when the user-vo map is much bigger than the list
+# of VOs, because many users are in a VO. (Perhaps due to pool accounts.) 
+# 
+#####################################################################
+
+# ----- pragmas ----- #
+use strict;
+use warnings;
+use FileHandle;
+use Getopt::Long;
+
+# ----- globals ----- #
+my $input_filename         = "";
+my $output_filename        = "";
+my $log_filename           = "";
+my $vo_list_filename       = "";
+my $undefined_ids_filename = "";
+my $log;
+my @vos;
+my %voi2voc;
+
+# ----- main flow ----- #
+parse_commandline();
+open_log_file();
+write_log_header();
+my $made_changes = check_vo_map();
+if ($made_changes) 
+{
+    write_vo_list();
+}
+close_log_file();
+exit(0);
+
+#####################################################################
+#
+# Function: parse_commandline
+# Purpose:  Read the command line. Fail with usage if there 
+#           are any problems.
+# 
+#####################################################################
+sub parse_commandline
+{
+    my $show_usage = 0;
+
+    GetOptions("input=s"         => \$input_filename,
+               "output=s"        => \$output_filename,
+               "volist=s"        => \$vo_list_filename,
+               "undefined_ids=s" => \$undefined_ids_filename,
+               "log:s"           => \$log_filename,
+               "help"            => \&usage);
+
+    if ($input_filename eq "" )
+    {
+        print "--input is a required parameter\n";
+        $show_usage = 1;
+    }
+
+    if ($output_filename eq "" )
+    {
+        $output_filename = $input_filename;
+        $show_usage = 1;
+    }
+
+    if ($show_usage == 1)
+    {
+        usage();
+    }
+    return;
+}
+
+#####################################################################
+#
+# Function: usage
+# Purpose:  Print information about how to use this program
+# 
+#####################################################################
+sub usage
+{
+    print "Usage:\n";
+    print "  osg-vo-map --input <name>\n";
+    print "             --output <name>\n";
+    print "             --volist <name>\n";
+    print "             --undefined_ids <name>\n";
+    print "             --log <name>\n";
+    print "             --help\n";
+    print "  --input and --output are required\n";
+    print "  If --log is not specified, it defaults to stderr\n";
+    exit(1);
+}
+
+#####################################################################
+#
+# Function: check_vo_map
+# Purpose:  All the real work happens in here. We read the VO map,
+#           find any problems, and write the new VO map. Note that
+#           we do not update the new VO map if there were no changes:
+#           this lets us preserve time stamps to see when the file
+#           was last changed "for real".
+# Returns:  0 if no changes were made
+#           1 if changes were made
+# 
+#####################################################################
+sub check_vo_map
+{
+    my $vo           = "";
+    my $account      = "";
+    my $voi_string   = "";
+    my $voc_string   = "";
+    my $made_hash    = 0;
+
+    my $input = new FileHandle $input_filename;
+    if (not defined $input) 
+    {
+        log_message("Could not open '$input_filename'");
+        exit(1);
+    }
+
+    my $temp_filename = "$output_filename.tmp." . time();
+    my $temp = new FileHandle;
+    $temp->open("$temp_filename", "w");
+    if (not defined $temp) 
+    {
+        log_message("Could not open temporary file '$temp_filename'");
+        exit(1);
+    }
+
+    my $undefined_ids = undef;
+    if ($undefined_ids_filename ne "") 
+    {
+        $undefined_ids = new FileHandle;
+        $undefined_ids->open("$undefined_ids_filename", "w");
+        if (not defined $undefined_ids)
+        {
+            log_message("Could not open undefined ids file `$undefined_ids`, continuing anyway");
+        }
+        else
+        {
+            print $undefined_ids "# A list of accounts eliminated from the user-vo map.\n";
+        }
+    }
+
+    # Read the input file, and write to the temporary file.
+    while (my $line = <$input>) 
+    {
+        # Copy over blank lines
+        if ($line =~ /^\s*$/) 
+        {
+            print $temp "$line";
+            next;
+        } 
+        # Copy over comments
+        elsif ($line =~ /^\s*#/) 
+        { 
+            print $temp "$line";
+
+            # But if the comment is a voi or voc line, read it
+            if ($line =~ /^#voi\s*(.*)/i && $voi_string eq "") {
+                $voi_string = $1;
+            } elsif ($line =~ /^#voc\s*(.*)/i && $voc_string eq "") {
+                $voc_string = $1;
+            }
+            if ($voi_string ne "" && $voc_string ne "" && !$made_hash) {
+                my @voi = split(/ /, $voi_string);
+                my @voc = split(/ /, $voc_string);
+                @voi2voc{@voi} = @voc;
+                $made_hash = 1;
+            }
+            
+            next;
+        } 
+        # Check lines of the form "account VO"
+        elsif ($line =~ /^\s*(\S+)\s+(\S+)/) 
+        {
+            $account = $1;
+            $vo = $2;
+
+            my $id = `id -u $account > /dev/null 2>&1`;
+            if ($? == 0)
+            {
+                print $temp "$line";
+                
+                if (grep( {$_ eq $vo} @vos) != 1)
+                {
+                    push(@vos, $vo);
+                }
+            }
+            else
+            {
+                log_message("Eliminating account '$account' which doesn't exist (used by VO '$vo').");
+                if (defined $undefined_ids) 
+                {
+                    print $undefined_ids "$account\n";
+                }
+            }
+        } else {
+            print $temp "$line";
+        }
+    }
+    $input->close();
+    $temp->close();
+    if (defined $undefined_ids) 
+    {
+        $undefined_ids->close();
+    }
+
+    # Now copy over the temporary file to the new file, if it's changed
+    my $do_copy = 0;
+    if (! -e $output_filename) 
+    {
+        $do_copy = 1;
+        log_message("Creating $output_filename");
+    }
+    else
+    {
+        system("cmp $temp_filename $output_filename > /dev/null 2>&1");
+        if (($? >> 8) == 1) 
+        {
+            $do_copy = 1;
+            log_message("VO-map is different, copying new version to $output_filename");
+        }
+        else
+        {
+            log_message("VO-map is same, leaving $output_filename untouched");
+        }
+    }
+
+    if ($do_copy)
+    {
+        unlink($output_filename);
+        `mv $temp_filename $output_filename`;
+    }
+    unlink($temp_filename);
+    return $do_copy;
+}
+
+#####################################################################
+#
+# Function: write_vo_list
+# Purpose:  Write the list of VOs that are supported. This is useful
+#           because the user-vo map might be very large (hundreds
+#           of entries per VO), and someone that wants just the list
+#           of VOs wants something simpler.
+# 
+#####################################################################
+sub write_vo_list
+{
+    if ($vo_list_filename ne "") 
+    {
+        my $vo_list = new FileHandle;
+        $vo_list->open($vo_list_filename, "w");
+        if (not defined $vo_list) 
+        {
+            log_message("Could not open '$vo_list_filename'");
+            exit(1);
+        }
+        else 
+        {
+            print $vo_list "# List of VOs this site claims to support\n";
+            foreach my $vo (sort (@vos))
+            {
+                print $vo_list "$vo\n";
+            }
+        }
+        $vo_list->close();
+    }
+    return;
+}
+
+#####################################################################
+#
+# Function: write_log_header
+# Purpose:  Information we print in the log file when we startup.
+# 
+#####################################################################
+sub write_log_header
+{
+    my $now = localtime();
+
+    log_message("#####################");
+    log_message("Starting check-vo-map");
+    log_message("Reading from '$input_filename', writing to '$output_filename'");
+    return;
+}
+
+#####################################################################
+#
+# Function: open_log_file
+# Purpose:  Open the up the file we use for logging, or set it to 
+#           be stderr if no file was specified.
+# 
+#####################################################################
+sub open_log_file
+{
+    if ($log_filename ne "")
+    {
+        $log = new FileHandle($log_filename, "a");
+        if (!defined $log) 
+        {
+            print STDERR "Can't open logfile '$log_filename'\n";
+            exit(1);
+        }
+    }
+    else
+    {
+        $log = new FileHandle();
+        $log->fdopen(fileno(STDERR), "a");
+    }
+    return;
+}
+
+#####################################################################
+#
+# Function: log_message
+# Purpose:  Write a message to the log file.
+#           We put a timestamp at the beginning of each line (ISO 8601)
+#           We put a newline on each message.
+# 
+#####################################################################
+sub log_message
+{
+    my $message = $_[0];
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+
+    printf $log "%d-%02d-%02dT%02d-%02d-%02d %s\n", 
+           $year+1900, $mon, $mday, $hour, $min, $sec, $message;
+    return;
+}
+
+#####################################################################
+#
+# Function: close_log_file
+# Purpose:  Close log file, if it isn't stderr.
+# 
+#####################################################################
+sub close_log_file
+{
+    if ($log_filename ne "")
+    {
+        $log->close();
+    }
+    return;
+}

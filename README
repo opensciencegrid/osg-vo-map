@@ -1,0 +1,65 @@
+The OSG-VO-Map package contains two scripts:
+
+===== generate-vo-map =====
+This script reads an EDG mkgridmap configuration file, as delivered by
+the Open Science Grid Operations Center (OSG GOC) and creates a list
+of users that are in each VO: a so-called User-VO map.
+
+This script cannot read an arbitrary edg-mkgridmap file and construct
+the VO map, but the GOC has added comments to the file to provide
+information about each VO name. There are two names for a VO, referred
+to as the "VOC" (the name you would use to look pretty) and the "VOI",
+which is usually the all-lowercase version of the VOC. 
+
+This happens with comments in the file. Before a "group" line, there
+can be two kinds of comments:
+
+Type 1:
+# 2 FermiLab -- Fermilab Grid Support Center (helpdesk-admin@fnal.gov)
+group vomss://voms.fnal.gov:8443/voms/fermilab fermilab
+
+Type 2:
+# USER-VO-MAP cdf CDF -- 1 -- Subir Sarkar (subir.sarkar@cnaf.infn.it)
+group vomss://voms.cnaf.infn.it:8443/voms/cdf cdf
+
+Note that Type 1 only specifies the VOC, and assumes that the VOI is
+the lowercased version of the VOC. Type 2 specifies both the VOI and
+the VOC. 
+
+Command-line options:
+
+--input  (Required) The edg-mkgridmap.conf file
+--output (Required) The file to put the user-vo-map in. 
+         Usually osg-user-vo-map.txt.new
+--log    (Optional) Where to print information about what the script
+         does. 
+
+===== check-vo-map =====
+This script reads a user-vo map and:
+
+1) Eliminates entries that list users that do not exist on the system
+   (as determined with the 'id' command-line tool. You might ask why
+   this functionality isn't in generate-vo-map. This is because users
+   that do not use EDG mkgridmap will not run generate-vo-map but they
+   might use GUMS which will create a VO map itself: so this tool is
+   independently useful. 
+
+2) Optionally creates a VO list. This is a list of VOs that are in the
+   User-VO map. If there are many users in a VO (which is sometimes
+   the case when using pool accounts with GUMs), the User-VO map can
+   be quite large, and this is a simplification for monitoring tools
+   that prefer to use it. 
+
+Command-line options:
+
+--input  (Required) The osg-user-vo-map.txt.new file
+--output (Optional) The file to put the user-vo-map in.
+         Usually osg-user-vo-map.txt. If not specified, then
+         the filename is assumed to be the same as --input
+--log    (Optional) Where to print information about what the script
+         does. 
+--volist (Optional) If present, the file where a list of VOs should
+         be placed. See #2 above.
+-undefined_ids (Optional) If present, the file where a list of
+         accounts that do not exist were removed from the
+         user-vo-map. 
