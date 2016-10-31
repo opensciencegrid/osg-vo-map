@@ -292,7 +292,7 @@ sub open_log_file
 sub log_message
 {
     my $message = $_[0];
-    printf $log strftime("%Y-%m-%dT%H-%M-%S", localtime(time)), " $message\n";
+    print $log strftime("%Y-%m-%dT%H-%M-%S", localtime(time)), " $message\n";
     return;
 }
 
