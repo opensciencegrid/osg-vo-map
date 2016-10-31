@@ -16,6 +16,7 @@ use strict;
 use warnings;
 use FileHandle;
 use Getopt::Long;
+use POSIX;
 
 # ----- globals ----- #
 my $input_filename   = "";
@@ -291,10 +292,7 @@ sub open_log_file
 sub log_message
 {
     my $message = $_[0];
-    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
-
-    printf $log "%d-%02d-%02dT%02d-%02d-%02d %s\n", 
-           $year+1900, $mon, $mday, $hour, $min, $sec, $message;
+    printf $log strftime("%Y-%m-%dT%H-%M-%S", localtime(time)), " $message\n";
     return;
 }
 
