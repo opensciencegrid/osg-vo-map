@@ -1,4 +1,4 @@
-VERSION = 0.0.1
+VERSION = 0.0.2
 SCRIPT = check-vo-map generate-vo-map
 SBINDIR = /usr/sbin
 DOCDIR = /usr/share/doc/osg-vo-map
